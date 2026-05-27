@@ -142,7 +142,7 @@ export default function App() {
                   </h2>
                 </div>
                 <div className="p-4 sm:p-6">
-                  <ImageUpload onUpload={handleDetection} />
+                  <ImageUpload onUpload={handleDetection} onScanAgain={() => setCurrentDetection(null)} />
                 </div>
               </div>
             </div>
