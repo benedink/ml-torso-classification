@@ -488,5 +488,15 @@ def detect():
         print(f"Global Pipeline Error: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint providing basic health info and available endpoints."""
+    return jsonify({
+        "status": "ok",
+        "message": "School Uniform Detection API",
+        "endpoints": ["/api/health", "/api/detect"]
+    })
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
