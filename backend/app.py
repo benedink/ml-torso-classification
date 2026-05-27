@@ -272,8 +272,25 @@ def detect():
         if img_array is None:
             return jsonify({"error": "Invalid image"}), 400
 
+        # Resize very large images server-side to avoid OOM during model inference
+        try:
+            h, w = img_array.shape[:2]
+            MAX_SIDE = 1600
+            max_side = max(h, w)
+            if max_side > MAX_SIDE:
+                scale = MAX_SIDE / float(max_side)
+                new_w = max(1, int(w * scale))
+                new_h = max(1, int(h * scale))
+                img_array = cv2.resize(img_array, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        except Exception as e:
+            print(f"Image resize error: {e}")
+
         # 1. Pose Detection (Mandatory)
-        people = extract_torso_boxes(img_array)
+        try:
+            people = extract_torso_boxes(img_array)
+        except Exception as e:
+            print(f"Pose model error: {e}")
+            people = []
 
         if len(people) == 0:
             return jsonify({"detections": [], "allowed": [], "not_allowed": [], "message": "No people detected"})

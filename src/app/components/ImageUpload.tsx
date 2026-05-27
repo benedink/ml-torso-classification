@@ -4,6 +4,7 @@ import { mapBackendDetections, requestDetection, summarizeDetectionConfidence, t
 
 interface ImageUploadProps {
   onUpload?: (result: DetectionResult) => void;
+  onScanAgain?: () => void;
 }
 
 export default function ImageUpload({ onUpload }: ImageUploadProps) {
@@ -20,48 +21,88 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
   const processFile = async (file: File) => {
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const imageData = e.target?.result as string;
-      setPreviewImage(imageData);
-      setIsProcessing(true);
-      setDetectionResult(null);
-      setUploadError(null);
+    // Client-side safeguard: limit and resize images to avoid huge canvases / uploads
+    const MAX_FILE_SIZE = 12 * 1024 * 1024; // 12MB hard cap
+    const MAX_DIMENSION = 1280; // max width/height for upload
 
-      try {
-        const data = await requestDetection(imageData);
+    if (file.size > MAX_FILE_SIZE) {
+      setUploadError('File is too large (over 12MB). Please resize the image before uploading.');
+      return;
+    }
 
-        // Process API response: allowed and not_allowed arrays
-        const allDetections = mapBackendDetections(data);
+    setIsProcessing(true);
+    setDetectionResult(null);
+    setUploadError(null);
 
-        if (allDetections.length === 0) {
-          throw new Error('No people were detected in this image.');
-        }
+    try {
+      // Read file as data URL then draw to an offscreen canvas scaled down
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = (e) => reject(new Error('Failed to read file'));
+        reader.readAsDataURL(file);
+      });
 
-        const detectedObjects = allDetections.map(d => d.reason);
-        const resultConfidence = summarizeDetectionConfidence(allDetections);
+      // Create image to measure natural size
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('Invalid image file'));
+        image.src = dataUrl;
+      });
 
-        const result: DetectionResult = {
-          id: Math.random().toString(36).substr(2, 9),
-          timestamp: new Date(),
-          confidence: resultConfidence,
-          detectedObjects,
-          imageData,
-          detections: allDetections,
-        };
+      // Determine scale to fit within MAX_DIMENSION
+      const naturalW = img.naturalWidth || img.width;
+      const naturalH = img.naturalHeight || img.height;
+      const scale = Math.min(1, MAX_DIMENSION / Math.max(naturalW, naturalH));
+      const outW = Math.max(1, Math.round(naturalW * scale));
+      const outH = Math.max(1, Math.round(naturalH * scale));
 
-        setDetectionResult(result);
-        onUpload?.(result);
-      } catch (error) {
-        console.error('Detection error:', error);
-        setDetectionResult(null);
-        setUploadError(error instanceof Error ? error.message : 'Image analysis failed.');
-      } finally {
-        setIsProcessing(false);
+      // Draw to offscreen canvas and compress to JPEG
+      const off = document.createElement('canvas');
+      off.width = outW;
+      off.height = outH;
+      const ctx = off.getContext('2d');
+      if (!ctx) throw new Error('Canvas not supported');
+      ctx.drawImage(img, 0, 0, outW, outH);
+
+      // Compress to reasonable quality to reduce payload
+      const compressedDataUrl = off.toDataURL('image/jpeg', 0.82);
+
+      // Set preview image to the compressed version (this is what will be sent)
+      setPreviewImage(compressedDataUrl);
+
+      // Send the compressed image to backend
+      const data = await requestDetection(compressedDataUrl);
+
+      // Process API response: allowed and not_allowed arrays
+      const allDetections = mapBackendDetections(data);
+
+      if (allDetections.length === 0) {
+        throw new Error('No people were detected in this image.');
       }
-    };
 
-    reader.readAsDataURL(file);
+      const detectedObjects = allDetections.map(d => d.reason);
+      const resultConfidence = summarizeDetectionConfidence(allDetections);
+
+      const result: DetectionResult = {
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: new Date(),
+        confidence: resultConfidence,
+        detectedObjects,
+        imageData: compressedDataUrl,
+        detections: allDetections,
+      };
+
+      setDetectionResult(result);
+      onUpload?.(result);
+    } catch (error) {
+      console.error('Detection error:', error);
+      setDetectionResult(null);
+      setUploadError(error instanceof Error ? error.message : 'Image analysis failed.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const handleFileSelect = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -80,54 +121,80 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
       const img = new Image();
 
       img.onload = () => {
-        canvas.width = img.width;
-        canvas.height = img.height;
+        try {
+          // Draw scaled preview to avoid huge canvas sizes in DOM
+          const MAX_DISPLAY = 1200;
+          const naturalW = img.naturalWidth || img.width;
+          const naturalH = img.naturalHeight || img.height;
+          const scale = Math.min(1, MAX_DISPLAY / Math.max(naturalW, naturalH));
+          const displayW = Math.max(1, Math.round(naturalW * scale));
+          const displayH = Math.max(1, Math.round(naturalH * scale));
 
-        if (ctx) {
-          ctx.drawImage(img, 0, 0);
+          canvas.width = displayW;
+          canvas.height = displayH;
 
-          (detectionResult.detections || []).forEach((det) => {
-            const boxes = [
-              ...(det.boundingBox
-                ? [{
-                    box: det.boundingBox,
-                    type: 'person',
-                    label: `${det.status}: ${det.reason}`,
-                    confidence: det.confidence,
-                  }]
-                : []),
-              ...((det.evidenceBoxes || [])
-                .filter((evidence) => evidence.type !== 'garment')
-                .map((evidence) => ({
-                  box: evidence.box,
-                  type: evidence.type,
-                  label: evidence.label,
-                  confidence: evidence.confidence,
-                }))),
-            ];
+          if (ctx) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, displayW, displayH);
 
-            boxes.forEach(({ box, type, label, confidence }) => {
-              let color = det.status === 'NOT ALLOWED' ? '#ef4444' : '#10b981';
-              if (type === 'logo') color = '#f59e0b';
-              if (type === 'org_text') color = '#6366f1';
+            (detectionResult.detections || []).forEach((det) => {
+              const boxes = [
+                ...(det.boundingBox
+                  ? [{
+                      box: det.boundingBox,
+                      type: 'person',
+                      label: `${det.status}: ${det.reason}`,
+                      confidence: det.confidence,
+                    }]
+                  : []),
+                ...((det.evidenceBoxes || [])
+                  .filter((evidence) => evidence.type !== 'garment')
+                  .map((evidence) => ({
+                    box: evidence.box,
+                    type: evidence.type,
+                    label: evidence.label,
+                    confidence: evidence.confidence,
+                  }))),
+              ];
 
-              ctx.strokeStyle = color;
-              ctx.lineWidth = type === 'person' ? 4 : 3;
-              ctx.strokeRect(box.x, box.y, box.width, box.height);
+              boxes.forEach(({ box, type, label, confidence }) => {
+                // Scale box coordinates to the displayed canvas size
+                const scaleX = displayW / (img.naturalWidth || img.width);
+                const scaleY = displayH / (img.naturalHeight || img.height);
+                const bx = Math.round(box.x * scaleX);
+                const by = Math.round(box.y * scaleY);
+                const bw = Math.round(box.width * scaleX);
+                const bh = Math.round(box.height * scaleY);
 
-              const labelText = `P${det.person_index + 1} ${label} (${(confidence * 100).toFixed(1)}%)`;
-              ctx.font = 'bold 18px Arial';
-              const textWidth = ctx.measureText(labelText).width;
-              const padding = 10;
-              const labelY = Math.max(0, box.y - 32);
+                let color = det.status === 'NOT ALLOWED' ? '#ef4444' : '#10b981';
+                if (type === 'logo') color = '#f59e0b';
+                if (type === 'org_text') color = '#6366f1';
 
-              ctx.fillStyle = color;
-              ctx.fillRect(box.x, labelY, textWidth + padding * 2, 32);
-              ctx.fillStyle = '#ffffff';
-              ctx.fillText(labelText, box.x + padding, labelY + 21);
+                ctx.strokeStyle = color;
+                ctx.lineWidth = type === 'person' ? 4 : 3;
+                ctx.strokeRect(bx, by, bw, bh);
+
+                const labelText = `P${det.person_index + 1} ${label} (${(confidence * 100).toFixed(1)}%)`;
+                ctx.font = 'bold 16px Arial';
+                const textWidth = ctx.measureText(labelText).width;
+                const padding = 8;
+                const labelY = Math.max(0, by - 28);
+
+                ctx.fillStyle = color;
+                ctx.fillRect(bx, labelY, textWidth + padding * 2, 28);
+                ctx.fillStyle = '#ffffff';
+                ctx.fillText(labelText, bx + padding, labelY + 19);
+              });
             });
-          });
+          }
+        } catch (e) {
+          console.error('Preview draw error:', e);
+          setUploadError('Failed to render preview. The image may be corrupted.');
         }
+      };
+
+      img.onerror = () => {
+        setUploadError('Failed to load preview image.');
       };
 
       img.src = previewImage;
@@ -159,6 +226,12 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
     setUploadError(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+    // notify parent to refresh any global stats/UI
+    try {
+      onScanAgain?.();
+    } catch (e) {
+      /* ignore */
     }
   };
 

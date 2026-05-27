@@ -378,7 +378,7 @@ export function DetectionDetailsModal({ result, onClose }: DetectionDetailsModal
           const width = box.width * scaleX;
           const height = box.height * scaleY;
 
-let color = det.status === 'NOT ALLOWED' ? '#ef4444' : '#10b981';
+          let color = det.status === 'NOT ALLOWED' ? '#ef4444' : '#10b981';
           if (type === 'logo') color = '#f59e0b';
           if (type === 'org_text') color = '#6366f1';
 
