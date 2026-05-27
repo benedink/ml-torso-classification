@@ -62,6 +62,7 @@ export default function App() {
           <div className="flex items-center gap-3 sm:gap-4">
             <BrandLogo variant="compact" className="w-16 sm:w-20 flex-shrink-0" />
             <div className="min-w-0">
+              <div className="text-sm font-semibold text-white">UniVision</div>
               <h1 className="text-lg sm:text-2xl lg:text-3xl font-bold text-white leading-tight">
                 School Uniform Compliance Detection System
               </h1>
@@ -249,7 +250,17 @@ export default function App() {
       <footer className="bg-gradient-to-r from-[#0F0E47] to-[#272757] text-white mt-8 sm:mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
           <div className="flex justify-center">
-            <BrandLogo variant="full" className="w-full max-w-[360px]" />
+            <div className="w-full max-w-md text-center">
+              <div className="text-2xl font-bold text-white">UniVision</div>
+              <p className="text-sm text-gray-300 mt-1">AI-Powered Uniform Detection & Monitoring</p>
+              <div className="mt-4 flex flex-col sm:flex-row sm:justify-center gap-4 text-sm text-gray-300">
+                <a href="#" className="hover:underline">About</a>
+                <a href="#" className="hover:underline">Privacy</a>
+                <a href="#" className="hover:underline">Terms</a>
+                <a href="mailto:contact@example.com" className="hover:underline">Contact</a>
+              </div>
+              <div className="mt-3 text-xs text-gray-400">© {new Date().getFullYear()} UniVision. All rights reserved.</div>
+            </div>
           </div>
         </div>
       </footer>
