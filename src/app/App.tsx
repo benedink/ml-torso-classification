@@ -5,7 +5,6 @@ import { DetectionResults } from './components/DetectionResults';
 import { DetectionStatusPanel } from './components/DetectionStatusPanel';
 import { Monitor, BarChart3, Shield, X, Trash2 } from 'lucide-react';
 
-const MODEL_ACCURACY = 94.2;
 const STORAGE_KEY = 'detectionHistory';
 
 export default function App() {
@@ -13,7 +12,6 @@ export default function App() {
   const [detectionHistory, setDetectionHistory] = useState<DetectionResult[]>([]);
   const [currentDetection, setCurrentDetection] = useState<DetectionResult | null>(null);
 
-  // Load from localStorage on mount
   useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
@@ -32,7 +30,6 @@ export default function App() {
     }
   }, []);
 
-  // Save to localStorage whenever history changes
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(detectionHistory));
   }, [detectionHistory]);
@@ -56,7 +53,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
-      {/* Header */}
       <header className="bg-gradient-to-r from-[#0F0E47] to-[#272757] shadow-lg">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
           <div className="flex items-center gap-3 sm:gap-4">
@@ -75,7 +71,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Navigation Tabs */}
       <div className="bg-white shadow-sm sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-2 sm:px-6">
           <div className="flex gap-2 sm:gap-8 overflow-x-auto">
@@ -120,13 +115,10 @@ export default function App() {
         </div>
       </div>
 
-      {/* Main Content */}
       <main className="max-w-7xl mx-auto px-3 sm:px-6 py-4 sm:py-8">
-        {activeTab === 'monitor' ? (
+        <div className={activeTab === 'monitor' ? 'block' : 'hidden'}>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
-            {/* Left Column - Camera & Upload */}
             <div className="lg:col-span-2 space-y-4 sm:space-y-6">
-              {/* Live Camera Feed */}
               <div className="bg-white rounded-xl shadow-lg overflow-hidden">
                 <div className="bg-gradient-to-r from-[#272757] to-[#505081] px-4 sm:px-6 py-3 sm:py-4">
                   <h2 className="text-lg sm:text-xl font-semibold text-white flex items-center gap-2">
@@ -139,7 +131,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Image Upload */}
               <div className="bg-white rounded-xl shadow-lg overflow-hidden">
                 <div className="bg-gradient-to-r from-[#505081] to-[#272757] px-4 sm:px-6 py-3 sm:py-4">
                   <h2 className="text-lg sm:text-xl font-semibold text-white flex items-center gap-2">
@@ -153,11 +144,9 @@ export default function App() {
               </div>
             </div>
 
-            {/* Right Column - Status & Activity */}
             <div className="lg:col-span-1 space-y-6">
               <DetectionStatusPanel detection={currentDetection} />
 
-              {/* Recent Activity Log */}
               <div className="bg-white rounded-xl shadow-lg overflow-hidden sticky top-6">
                 <div className="bg-gradient-to-r from-[#0F0E47] to-[#272757] px-6 py-4">
                   <h2 className="text-lg font-semibold text-white">Detection History</h2>
@@ -172,8 +161,8 @@ export default function App() {
                       </div>
                     ) : (
                       detectionHistory.slice().reverse().map((result) => {
-                        const lowReasons = (result.detectedObjects || []).map(r => r.toLowerCase());
-                        const isViolation = lowReasons.some(r => r.includes('civilian') || r.includes('violation') || r.includes('not white') || r.includes('dark') || r.includes('not allowed'));
+                        const detections = result.detections || [];
+                        const isViolation = detections.some((d) => d.status === 'NOT ALLOWED');
 
                         return (
                           <div
@@ -206,14 +195,14 @@ export default function App() {
                               </div>
                             </div>
                             <div className="flex flex-col gap-1">
-                              {result.detectedObjects?.map((reason, idx) => (
+                              {detections.map((det, idx) => (
                                 <span
                                   key={idx}
                                   className={`text-xs font-semibold ${
-                                    isViolation ? 'text-red-700' : 'text-green-700'
+                                    det.status === 'NOT ALLOWED' ? 'text-red-700' : 'text-green-700'
                                   }`}
                                 >
-                                  • {reason}
+                                  Person {det.person_index + 1}: {det.status} - {det.reason}
                                 </span>
                               ))}
                             </div>
@@ -226,32 +215,33 @@ export default function App() {
               </div>
             </div>
           </div>
-        ) : (
+        </div>
+
+        <div className={activeTab === 'results' ? 'block' : 'hidden'}>
           <div className="bg-white rounded-xl shadow-lg overflow-hidden">
             <div className="bg-gradient-to-r from-[#505081] to-[#0F0E47] px-4 sm:px-6 py-3 sm:py-4">
               <h2 className="text-xl sm:text-2xl font-semibold text-white">Detection Analytics & Statistics</h2>
             </div>
             <div className="p-4 sm:p-6">
-              <DetectionResults results={detectionHistory} />
+              <DetectionResults
+                results={detectionHistory}
+                onRemoveResult={removeDetection}
+                onClearHistory={clearAllDetections}
+              />
             </div>
           </div>
-        )}
+        </div>
       </main>
 
-      {/* Footer */}
       <footer className="bg-gradient-to-r from-[#0F0E47] to-[#272757] text-white mt-8 sm:mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
-          <div className="flex flex-col md:flex-row justify-between items-center gap-3 sm:gap-4">
-            <div className="flex items-center gap-2 sm:gap-3 text-center md:text-left">
+          <div className="flex justify-center">
+            <div className="flex items-center gap-2 sm:gap-3 text-center">
               <Shield className="w-5 h-5 sm:w-6 sm:h-6 text-[#8686AC] flex-shrink-0" />
               <div>
                 <p className="font-semibold text-sm sm:text-base">School Uniform Compliance System</p>
                 <p className="text-xs sm:text-sm text-[#8686AC]">Powered by AI Deep Learning Technology</p>
               </div>
-            </div>
-            <div className="text-center md:text-right">
-              <p className="text-xs sm:text-sm text-[#8686AC]">Model Performance</p>
-              <p className="text-xl sm:text-2xl font-bold text-green-400">{MODEL_ACCURACY}% Accuracy</p>
             </div>
           </div>
         </div>

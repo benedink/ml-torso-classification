@@ -21,12 +21,10 @@ export function DetectionStatusPanel({ detection }: DetectionStatusPanelProps) {
     );
   }
 
-  // Use the reasons directly from detectedObjects (populated from backend reasons)
-  const reasons = detection.detectedObjects || [];
-  const lowReasons = reasons.map(r => r.toLowerCase());
-  
-  const isViolation = lowReasons.some(r => r.includes('civilian') || r.includes('violation') || r.includes('not white') || r.includes('error') || r.includes('not allowed'));
-  const isAllowed = !isViolation && reasons.length > 0;
+  // Use the detections array directly from backend
+  const allDetections = detection.detections || [];
+  const isViolation = allDetections.some(d => d.status === 'NOT ALLOWED');
+  const isAllowed = !isViolation && allDetections.length > 0;
   
   let statusConfig = {
     icon: AlertCircle,
@@ -37,7 +35,7 @@ export function DetectionStatusPanel({ detection }: DetectionStatusPanelProps) {
     iconBg: 'bg-yellow-100',
     iconColor: 'text-yellow-600',
     title: 'Detection Result',
-    message: reasons[0] || 'Processing detection data...'
+    message: 'Processing detection data...'
   };
 
   if (isAllowed) {
@@ -49,8 +47,8 @@ export function DetectionStatusPanel({ detection }: DetectionStatusPanelProps) {
       textColor: 'text-green-800',
       iconBg: 'bg-green-100',
       iconColor: 'text-green-600',
-      title: 'Uniform Allowed',
-      message: reasons[0] || 'Student is wearing proper school uniform'
+      title: 'ALLOWED',
+      message: 'Student is wearing proper school uniform'
     };
   } else if (isViolation) {
     statusConfig = {
@@ -61,12 +59,15 @@ export function DetectionStatusPanel({ detection }: DetectionStatusPanelProps) {
       textColor: 'text-red-800',
       iconBg: 'bg-red-100',
       iconColor: 'text-red-600',
-      title: 'Uniform Violation',
-      message: reasons[0] || 'Student is not wearing proper school uniform'
+      title: 'NOT ALLOWED',
+      message: 'Student is not wearing proper school uniform'
     };
   }
 
   const StatusIcon = statusConfig.icon;
+  const averageConfidence = allDetections.length > 0
+    ? allDetections.reduce((sum, det) => sum + det.confidence, 0) / allDetections.length
+    : detection.confidence;
 
   return (
     <div className="bg-white rounded-xl shadow-lg overflow-hidden">
@@ -85,37 +86,60 @@ export function DetectionStatusPanel({ detection }: DetectionStatusPanelProps) {
             <div className="space-y-3">
               <div>
                 <div className="flex justify-between items-center mb-1">
-                  <span className="text-xs font-semibold text-gray-600">Confidence Score</span>
+                  <span className="text-xs font-semibold text-gray-600">Average Person Confidence</span>
                   <span className={`text-sm font-bold ${statusConfig.textColor}`}>
-                    {(detection.confidence * 100).toFixed(1)}%
+                    {(averageConfidence * 100).toFixed(1)}%
                   </span>
                 </div>
                 <div className="w-full bg-gray-200 rounded-full h-2 sm:h-2.5">
                   <div
                     className={`h-2 sm:h-2.5 rounded-full ${
-                      detection.confidence > 0.8 ? 'bg-green-500' :
-                      detection.confidence > 0.6 ? 'bg-yellow-500' :
+                      averageConfidence > 0.8 ? 'bg-green-500' :
+                      averageConfidence > 0.6 ? 'bg-yellow-500' :
                       'bg-red-500'
                     }`}
-                    style={{ width: `${detection.confidence * 100}%` }}
+                    style={{ width: `${averageConfidence * 100}%` }}
                   />
                 </div>
               </div>
 
+
               <div>
-                <span className="text-xs font-semibold text-gray-600 block mb-2">Backend Results</span>
+                <span className="text-xs font-semibold text-gray-600 block mb-2">Detected Persons & Classification</span>
                 <div className="flex flex-col gap-2">
-                  {detection.detections?.map((det, idx) => (
+                  {allDetections.map((det, idx) => (
                     <div key={idx} className="bg-white bg-opacity-50 p-2 rounded border border-gray-100 shadow-sm">
-                      <div className="flex justify-between items-start mb-1">
-                        <span className="text-[10px] font-bold text-gray-400 uppercase">Stage: {det.stage}</span>
+                      <div className="flex flex-wrap items-center gap-2 mb-1">
+                        <span className="text-[10px] font-bold text-gray-400 uppercase">Person #{det.person_index + 1}</span>
                         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
                           det.status === 'ALLOWED' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
                         }`}>
                           {det.status}
                         </span>
                       </div>
-                      <div className="text-xs font-semibold text-gray-800">{det.reason}</div>
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="font-medium">Reason:</span> <span>{det.reason}</span>
+                        <span className="text-gray-700">|</span>
+                        <span className="font-medium">Confidence:</span> <span>{(det.confidence * 100).toFixed(1)}%</span>
+                        {det.boundingBox && <><span className="text-gray-700">|</span><span className="font-medium">Box:</span> <span>{`[${det.boundingBox.x},${det.boundingBox.y},${det.boundingBox.width},${det.boundingBox.height}]`}</span></>}
+                      </div>
+                      {det.details?.confidence_source && (
+                        <div className="mt-1 text-[11px] text-gray-500">
+                          Confidence source: {det.details.confidence_source}
+                        </div>
+                      )}
+                      {det.evidenceBoxes && det.evidenceBoxes.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {det.evidenceBoxes.map((evidence, evidenceIdx) => (
+                            <span
+                              key={evidenceIdx}
+                              className="text-[10px] rounded-full bg-slate-100 text-slate-700 px-2 py-1 font-medium"
+                            >
+                              {evidence.type}: {evidence.label}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

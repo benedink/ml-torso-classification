@@ -5,12 +5,44 @@ interface CameraFeedProps {
   onDetection?: (result: DetectionResult) => void;
 }
 
+export interface DetectionBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface DetectionEvidenceBox {
+  type: string;
+  label: string;
+  confidence: number;
+  box: DetectionBox;
+}
+
+export interface DetectionDetails {
+  has_logo?: boolean;
+  logo_conf?: number;
+  ocr_match?: boolean;
+  ocr_conf?: number;
+  clip_label?: string;
+  clip_conf?: number;
+  roboflow_class?: string;
+  roboflow_conf?: number;
+  white_ratio?: number;
+  classification_source?: string;
+  confidence_source?: string;
+}
+
 export interface PersonDetection {
   person_index: number;
   stage: string;
   reason: string;
   confidence: number;
   status: 'ALLOWED' | 'NOT ALLOWED';
+  boundingBox?: DetectionBox;
+  type?: string; // e.g. 'logo', 'org_text', 'shape', etc
+  evidenceBoxes?: DetectionEvidenceBox[];
+  details?: DetectionDetails;
 }
 
 export interface DetectionResult {
@@ -20,12 +52,67 @@ export interface DetectionResult {
   detectedObjects: string[]; // Still used for compatibility (reasons)
   imageData?: string;
   detections?: PersonDetection[];
-  boundingBox?: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
+}
+
+export function mapBackendDetections(data: any): PersonDetection[] {
+  if (Array.isArray(data?.detections)) {
+    return data.detections
+      .map((d: any) => ({
+        ...d,
+        status: d.status === 'ALLOWED' ? 'ALLOWED' : 'NOT ALLOWED',
+      }))
+      .sort((a, b) => a.person_index - b.person_index);
+  }
+
+  return [
+    ...((data?.allowed || []).map((d: any) => ({ ...d, status: 'ALLOWED' as const }))),
+    ...((data?.not_allowed || []).map((d: any) => ({ ...d, status: 'NOT ALLOWED' as const }))),
+  ].sort((a, b) => a.person_index - b.person_index);
+}
+
+export function summarizeDetectionConfidence(detections: PersonDetection[]): number {
+  if (detections.length === 0) {
+    return 0;
+  }
+
+  const totalConfidence = detections.reduce((sum, detection) => {
+    return sum + (detection.confidence || 0);
+  }, 0);
+
+  return totalConfidence / detections.length;
+}
+
+export async function requestDetection(image: string) {
+  const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:5000') as string;
+
+  let response: Response;
+  try {
+    response = await fetch(`${apiUrl}/api/detect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image })
+    });
+  } catch (error) {
+    throw new Error(`Could not reach the backend at ${apiUrl}. Start the Flask server and try again.`);
+  }
+
+  let data: any = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const message = data?.error || `Detection request failed with status ${response.status}.`;
+    throw new Error(message);
+  }
+
+  if (data?.error) {
+    throw new Error(data.error);
+  }
+
+  return data;
 }
 
 export function CameraFeed({ onDetection }: CameraFeedProps) {
@@ -35,7 +122,9 @@ export function CameraFeed({ onDetection }: CameraFeedProps) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detectionActive, setDetectionActive] = useState(false);
-  const [currentBoundingBox, setCurrentBoundingBox] = useState<any>(null);
+  const [detectionError, setDetectionError] = useState<string | null>(null);
+  // Remove currentBoundingBox, use allDetections state for overlays
+  const [allDetections, setAllDetections] = useState<PersonDetection[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
 
   const stopCamera = () => {
@@ -85,6 +174,7 @@ export function CameraFeed({ onDetection }: CameraFeedProps) {
       }
 
       setError(null);
+      setDetectionError(null);
       setIsStreaming(true);
     } catch (err) {
       setError('Camera access denied or not available');
@@ -118,95 +208,40 @@ export function CameraFeed({ onDetection }: CameraFeedProps) {
             const imageBase64 = canvas.toDataURL('image/jpeg', 0.8);
 
             // Call backend API
-            const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:5000') as string;
-            fetch(`${apiUrl}/api/detect`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ image: imageBase64 })
-            })
-              .then(res => res.json())
+            requestDetection(imageBase64)
               .then(data => {
                 // Process API response: allowed and not_allowed arrays
-                const allDetections: PersonDetection[] = [
-                  ...(data.allowed || []).map((d: any) => ({ ...d, status: 'ALLOWED' })),
-                  ...(data.not_allowed || []).map((d: any) => ({ ...d, status: 'NOT ALLOWED' }))
-                ];
+                const allDetections = mapBackendDetections(data);
+
+                setAllDetections(allDetections);
+                setDetectionError(null);
 
                 if (allDetections.length > 0) {
-                  const firstDet = allDetections[0];
-                  
                   const detectedObjects = allDetections.map(d => d.reason);
-                  const avgConfidence = allDetections.reduce((acc, d) => acc + d.confidence, 0) / allDetections.length;
-
-                  const boxWidth = video.videoWidth * 0.4;
-                  const boxHeight = video.videoHeight * 0.5;
-                  const boxX = (video.videoWidth - boxWidth) / 2;
-                  const boxY = video.videoHeight * 0.15;
+                  const resultConfidence = summarizeDetectionConfidence(allDetections);
 
                   const result: DetectionResult = {
                     id: Math.random().toString(36).substr(2, 9),
                     timestamp: new Date(),
-                    confidence: avgConfidence,
+                    confidence: resultConfidence,
                     detectedObjects,
                     imageData: imageBase64,
-                    detections: allDetections,
-                    boundingBox: { x: boxX, y: boxY, width: boxWidth, height: boxHeight }
+                    detections: allDetections
                   };
-
-                  setCurrentBoundingBox({
-                    x: boxX,
-                    y: boxY,
-                    width: boxWidth,
-                    height: boxHeight,
-                    label: firstDet.reason,
-                    confidence: firstDet.confidence
-                  });
 
                   onDetection?.(result);
                 }
               })
               .catch(err => {
-                console.log('Detection API error, showing as NOT ALLOWED:', err);
-                const mockReason = "NOT ALLOWED";
-                const confidence = 0.0;
-                
-                const boxWidth = video.videoWidth * 0.4;
-                const boxHeight = video.videoHeight * 0.5;
-                const boxX = (video.videoWidth - boxWidth) / 2;
-                const boxY = video.videoHeight * 0.15;
-
-                const mockResult: DetectionResult = {
-                  id: Math.random().toString(36).substr(2, 9),
-                  timestamp: new Date(),
-                  confidence,
-                  detectedObjects: [mockReason],
-                  imageData: canvas.toDataURL('image/jpeg', 0.8),
-                  detections: [{
-                    person_index: 0,
-                    stage: "System Error",
-                    reason: mockReason,
-                    confidence,
-                    status: 'NOT ALLOWED'
-                  }],
-                  boundingBox: { x: boxX, y: boxY, width: boxWidth, height: boxHeight }
-                };
-
-                setCurrentBoundingBox({
-                  x: boxX,
-                  y: boxY,
-                  width: boxWidth,
-                  height: boxHeight,
-                  label: mockReason,
-                  confidence
-                });
-
-                onDetection?.(mockResult);
+                console.log('Detection API error:', err);
+                setAllDetections([]);
+                setDetectionError(err instanceof Error ? err.message : 'Detection request failed.');
               });
           }
         }
-      }, 3000); // Increased to 3 seconds to reduce API calls
+      }, 3000);
     } else {
-      setCurrentBoundingBox(null);
+      setAllDetections([]);
     }
 
     return () => {
@@ -216,7 +251,7 @@ export function CameraFeed({ onDetection }: CameraFeedProps) {
     };
   }, [detectionActive, isStreaming, onDetection]);
 
-  // Handle overlay rendering
+  // Handle overlay rendering for all detections
   useEffect(() => {
     if (overlayCanvasRef.current && videoRef.current) {
       const canvas = overlayCanvasRef.current;
@@ -226,40 +261,59 @@ export function CameraFeed({ onDetection }: CameraFeedProps) {
       if (ctx) {
         const renderOverlay = () => {
           if (!isStreaming) return;
-          
+
           canvas.width = video.offsetWidth;
           canvas.height = video.offsetHeight;
           ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-          if (currentBoundingBox) {
-            const scaleX = canvas.width / video.videoWidth;
-            const scaleY = canvas.height / video.videoHeight;
+          allDetections.forEach(det => {
+            const boxes = [
+              ...(det.boundingBox
+                ? [{
+                    box: det.boundingBox,
+                    type: 'person',
+                    label: `${det.status}: ${det.reason}`,
+                    confidence: det.confidence,
+                  }]
+                : []),
+              ...((det.evidenceBoxes || [])
+                .filter((evidence) => evidence.type !== 'garment')
+                .map((evidence) => ({
+                  box: evidence.box,
+                  type: evidence.type,
+                  label: evidence.label,
+                  confidence: evidence.confidence,
+                }))),
+            ];
 
-            const x = currentBoundingBox.x * scaleX;
-            const y = currentBoundingBox.y * scaleY;
-            const width = currentBoundingBox.width * scaleX;
-            const height = currentBoundingBox.height * scaleY;
+            boxes.forEach(({ box, type, label, confidence }) => {
+              const scaleX = canvas.width / video.videoWidth;
+              const scaleY = canvas.height / video.videoHeight;
+              const x = box.x * scaleX;
+              const y = box.y * scaleY;
+              const width = box.width * scaleX;
+              const height = box.height * scaleY;
 
-            // Determine color (dynamic based on label/reason)
-            let color = '#10b981'; // Default Green
-            const lowLabel = currentBoundingBox.label.toLowerCase();
-            if (lowLabel.includes('civilian') || lowLabel.includes('violation') || lowLabel.includes('not white') || lowLabel.includes('error') || lowLabel.includes('not allowed')) {
-              color = '#ef4444'; // Red
-            }
+              let color = det.status === 'NOT ALLOWED' ? '#ef4444' : '#10b981';
+              if (type === 'logo') color = '#f59e0b';
+              if (type === 'org_text') color = '#6366f1';
 
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 3;
-            ctx.strokeRect(x, y, width, height);
+              ctx.strokeStyle = color;
+              ctx.lineWidth = type === 'person' ? 3 : 2;
+              ctx.strokeRect(x, y, width, height);
 
-            // Draw label
-            ctx.fillStyle = color;
-            ctx.font = 'bold 14px Arial';
-            const labelText = `${currentBoundingBox.label} (${(currentBoundingBox.confidence * 100).toFixed(1)}%)`;
-            const textWidth = ctx.measureText(labelText).width;
-            ctx.fillRect(x, y - 25, textWidth + 10, 25);
-            ctx.fillStyle = '#ffffff';
-            ctx.fillText(labelText, x + 5, y - 7);
-          }
+              const labelText = `P${det.person_index + 1} ${label} (${(confidence * 100).toFixed(1)}%)`;
+              ctx.font = 'bold 14px Arial';
+              const textWidth = ctx.measureText(labelText).width;
+              const labelHeight = 24;
+              const labelY = Math.max(0, y - labelHeight);
+
+              ctx.fillStyle = color;
+              ctx.fillRect(x, labelY, textWidth + 10, labelHeight);
+              ctx.fillStyle = '#ffffff';
+              ctx.fillText(labelText, x + 5, labelY + 16);
+            });
+          });
 
           requestAnimationFrame(renderOverlay);
         };
@@ -268,7 +322,7 @@ export function CameraFeed({ onDetection }: CameraFeedProps) {
         return () => cancelAnimationFrame(animationId);
       }
     }
-  }, [currentBoundingBox, isStreaming]);
+  }, [allDetections, isStreaming]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -314,6 +368,11 @@ export function CameraFeed({ onDetection }: CameraFeedProps) {
             <div className="absolute bottom-2 sm:bottom-4 left-2 sm:left-4 bg-black bg-opacity-60 text-white px-2 sm:px-3 py-1 sm:py-1.5 rounded text-xs">
               Live Feed
             </div>
+            {detectionError && (
+              <div className="absolute bottom-2 sm:bottom-4 right-2 sm:right-4 max-w-[70%] rounded-lg bg-red-600 px-3 py-2 text-xs font-medium text-white shadow-lg">
+                {detectionError}
+              </div>
+            )}
           </>
         )}
         <canvas ref={canvasRef} className="hidden" />

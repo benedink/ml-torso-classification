@@ -90,6 +90,23 @@ def calculate_iou(box1, box2):
 
     return intersection / float(area1 + area2 - intersection)
 
+def xyxy_to_box(x1, y1, x2, y2):
+    """Convert xyxy coordinates to frontend-friendly x/y/width/height."""
+    return {
+        "x": int(x1),
+        "y": int(y1),
+        "width": int(max(0, x2 - x1)),
+        "height": int(max(0, y2 - y1))
+    }
+
+def roboflow_pred_to_xyxy(pred):
+    """Convert a Roboflow prediction to xyxy coordinates."""
+    x1 = int(pred['x'] - pred['width'] / 2)
+    y1 = int(pred['y'] - pred['height'] / 2)
+    x2 = int(pred['x'] + pred['width'] / 2)
+    y2 = int(pred['y'] + pred['height'] / 2)
+    return [x1, y1, x2, y2]
+
 def extract_torso_boxes(img_array):
     """Extract torso bounding boxes using keypoints."""
     try:
@@ -161,6 +178,7 @@ def check_org_shirt_ocr(crop_img):
 
         found_text = []
         best_prob = 0.0
+        matched_box = None
         for (bbox, text, prob) in text_results:
             if prob > 0.40 and len(text) >= 3:
                 found_text.append(text.lower())
@@ -171,12 +189,19 @@ def check_org_shirt_ocr(crop_img):
             matched_keywords = [kw for kw in VALID_ORG_KEYWORDS if kw in full_detected_string]
 
             if len(matched_keywords) > 0:
-                return True, matched_keywords[0].upper(), best_prob
+                for (bbox, text, prob) in text_results:
+                    lowered = text.lower()
+                    if prob > 0.40 and any(kw in lowered for kw in matched_keywords):
+                        xs = [point[0] for point in bbox]
+                        ys = [point[1] for point in bbox]
+                        matched_box = [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
+                        break
+                return True, matched_keywords[0].upper(), best_prob, matched_box
             
-        return False, "No Match", 0.0
+        return False, "No Match", 0.0, None
     except Exception as e:
         print(f"OCR Error: {e}")
-        return False, "Error", 0.0
+        return False, "Error", 0.0, None
 
 def check_white_majority(crop_img):
     """Check if torso is predominantly white with strict 50% threshold."""
@@ -205,6 +230,14 @@ def check_white_majority(crop_img):
     except Exception as e:
         print(f"White Check Error: {e}")
         return False, 0.0
+
+def add_detection(results, res_obj, status):
+    """Store a detection in both grouped and unified response lists."""
+    results["detections"].append(res_obj)
+    if status == "ALLOWED":
+        results["allowed"].append(res_obj)
+    else:
+        results["not_allowed"].append(res_obj)
 
 # ============================================================================
 # API ENDPOINTS
@@ -243,7 +276,7 @@ def detect():
         people = extract_torso_boxes(img_array)
 
         if len(people) == 0:
-            return jsonify({"allowed": [], "not_allowed": [], "message": "No people detected"})
+            return jsonify({"detections": [], "allowed": [], "not_allowed": [], "message": "No people detected"})
 
         # Get Roboflow predictions for entire frame
         roboflow_preds = []
@@ -255,7 +288,7 @@ def detect():
         except Exception as e:
             print(f"Roboflow shape model call failed: {e}")
 
-        results = {"allowed": [], "not_allowed": []}
+        results = {"detections": [], "allowed": [], "not_allowed": []}
 
         for person in people:
             try:
@@ -266,87 +299,147 @@ def detect():
 
                 if torso_crop.size == 0: continue
 
-                # 1. Roboflow Shape Class
+                # 1. Roboflow Shape Class (Stage 2)
                 rf_class = "unknown"
                 rf_conf = 0.0
-                person_center = ((tx1 + tx2) / 2, (ty1 + ty2) / 2)
+                best_iou = 0.0
                 for pred in roboflow_preds:
-                    vx1, vy1 = int(pred['x'] - pred['width']/2), int(pred['y'] - pred['height']/2)
-                    vx2, vy2 = int(pred['x'] + pred['width']/2), int(pred['y'] + pred['height']/2)
-                    if vx1 <= person_center[0] <= vx2 and vy1 <= person_center[1] <= vy2:
+                    pred_box = roboflow_pred_to_xyxy(pred)
+                    iou = calculate_iou([tx1, ty1, tx2, ty2], pred_box)
+                    if iou > best_iou:
+                        best_iou = iou
                         rf_class = pred['class']
                         rf_conf = float(pred['confidence'])
-                        break
 
-                # STRICT RULE: Shape rejection takes priority
+                # STRICT RULE: Shape rejection takes priority (Stage 2)
+                garment_box = xyxy_to_box(tx1, ty1, tx2, ty2)
+                evidence_boxes = [{
+                    "type": "garment",
+                    "label": f"Garment: {rf_class.upper()}" if rf_class != "unknown" else "Garment Region",
+                    "confidence": round(max(rf_conf, 0.0), 2),
+                    "box": garment_box
+                }]
+
                 if rf_class in ["dress", "sleeveless", "violation"]:
-                    results["not_allowed"].append({
+                    res_obj = {
                         "person_index": idx,
-                        "stage": "Shape Check",
+                        "status": "NOT ALLOWED",
+                        "stage": "Stage 2",
                         "reason": f"Shape Violation: {rf_class.upper()}",
                         "confidence": round(rf_conf, 2),
-                        "details": {"roboflow_class": rf_class}
-                    })
+                        "type": "shape",
+                        "boundingBox": garment_box,
+                        "evidenceBoxes": evidence_boxes,
+                        "details": {
+                            "roboflow_class": rf_class,
+                            "roboflow_conf": round(rf_conf, 2),
+                            "classification_source": "Roboflow garment-shape model",
+                            "confidence_source": "Roboflow garment confidence"
+                        }
+                    }
+                    add_detection(results, res_obj, "NOT ALLOWED")
                     continue
 
-                # 2. YOLO Logo Detection
+                # 2. YOLO Logo Detection (Stage 3)
                 has_logo = False
                 logo_conf = 0.0
+                logo_boxes = []
                 try:
                     logo_results = logo_model(torso_crop, verbose=False, conf=0.5)
                     if len(logo_results[0].boxes) > 0:
                         has_logo = True
-                        logo_conf = float(logo_results[0].boxes.conf[0])
+                        for box_idx, box in enumerate(logo_results[0].boxes.xyxy):
+                            lx1, ly1, lx2, ly2 = map(int, box.tolist())
+                            abs_box = xyxy_to_box(tx1 + lx1, ty1 + ly1, tx1 + lx2, ty1 + ly2)
+                            conf_val = float(logo_results[0].boxes.conf[box_idx])
+                            logo_conf = max(logo_conf, conf_val)
+                            logo_boxes.append({
+                                "type": "logo",
+                                "label": "Detected Logo",
+                                "confidence": round(conf_val, 2),
+                                "box": abs_box
+                            })
                 except Exception as e:
                     print(f"Logo detection error: {e}")
+                evidence_boxes.extend(logo_boxes)
 
-                # 3. EasyOCR Check
-                is_org, org_text, ocr_conf = check_org_shirt_ocr(torso_crop)
+                # 3. EasyOCR Check (Stage 3)
+                is_org, org_text, ocr_conf, ocr_box = check_org_shirt_ocr(torso_crop)
+                if ocr_box is not None:
+                    ox1, oy1, ox2, oy2 = ocr_box
+                    evidence_boxes.append({
+                        "type": "org_text",
+                        "label": f"Org Text: {org_text}",
+                        "confidence": round(ocr_conf, 2),
+                        "box": xyxy_to_box(tx1 + ox1, ty1 + oy1, tx1 + ox2, ty1 + oy2)
+                    })
 
-                # 4. Saturation/Brightness Check
+                # 4. Saturation/Brightness Check (Stage 4)
                 hsv_crop = cv2.cvtColor(torso_crop, cv2.COLOR_BGR2HSV)
                 avg_saturation = np.mean(hsv_crop[:, :, 1])
                 avg_brightness = np.mean(hsv_crop[:, :, 2])
                 is_dark_garment = (avg_brightness < 80) or (avg_saturation < 30 and avg_brightness < 120)
 
-                # 5. CLIP Analysis
+                # 5. CLIP Analysis (Stage 4)
                 clip_label, clip_conf = run_clip_analysis(torso_crop)
 
-                # 6. White pixel majority
+                # 6. White pixel majority (Stage 4)
                 is_white, white_ratio = check_white_majority(torso_crop)
 
                 # DECISION LOGIC
                 status = "NOT ALLOWED"
                 reason = "Civilian Shirt"
                 final_confidence = clip_conf
+                current_stage = "Stage 4"
+                classification_type = "civilian_shirt"
+                classification_source = "CLIP garment analysis"
                 
                 if has_logo:
                     status = "ALLOWED"
-                    reason = "Official Logo Detected"
+                    reason = "Logo Detected"
                     final_confidence = logo_conf
+                    current_stage = "Stage 3"
+                    classification_type = "logo"
+                    classification_source = "YOLO logo detector"
                 elif is_org:
                     status = "ALLOWED"
-                    reason = f"Org Text: {org_text}"
+                    reason = f"Valid Org Text: {org_text}"
                     final_confidence = ocr_conf
+                    current_stage = "Stage 3"
+                    classification_type = "org_text"
+                    classification_source = "EasyOCR organization text match"
                 elif is_dark_garment:
                     status = "NOT ALLOWED"
-                    reason = "Prohibited Dark/Non-Uniform Garment"
-                    final_confidence = 0.9  # High confidence it's dark
+                    reason = "Prohibited Dark Garment"
+                    final_confidence = 0.9
+                    current_stage = "Stage 4"
+                    classification_type = "dark_garment"
+                    classification_source = "Brightness and saturation check"
                 elif rf_class == "white" or "white" in clip_label:
                     if is_white:
                         status = "ALLOWED"
                         reason = "White Uniform Verified"
                         final_confidence = max(rf_conf, clip_conf, white_ratio)
+                        current_stage = "Stage 4"
+                        classification_type = "white_uniform"
+                        classification_source = "White-pixel verification with CLIP/Roboflow support"
                     else:
                         status = "NOT ALLOWED"
                         reason = "Garment not white enough"
                         final_confidence = 1.0 - white_ratio
+                        current_stage = "Stage 4"
+                        classification_type = "not_white_enough"
+                        classification_source = "White-pixel verification"
 
                 res_obj = {
                     "person_index": idx,
-                    "stage": "Comprehensive Analysis",
+                    "status": status,
+                    "stage": current_stage,
                     "reason": reason,
                     "confidence": round(final_confidence, 2),
+                    "type": classification_type,
+                    "boundingBox": garment_box,
+                    "evidenceBoxes": evidence_boxes,
                     "details": {
                         "has_logo": has_logo,
                         "logo_conf": round(logo_conf, 2),
@@ -356,22 +449,38 @@ def detect():
                         "clip_conf": round(clip_conf, 2),
                         "roboflow_class": rf_class,
                         "roboflow_conf": round(rf_conf, 2),
-                        "white_ratio": round(white_ratio, 2)
+                        "white_ratio": round(white_ratio, 2),
+                        "classification_source": classification_source,
+                        "confidence_source": {
+                            "logo": "Highest detected logo confidence",
+                            "org_text": "OCR text match confidence",
+                            "dark_garment": "Rule-based confidence from dark-garment heuristic",
+                            "white_uniform": "Best supporting signal from Roboflow, CLIP, and white-ratio checks",
+                            "not_white_enough": "Inverse white-ratio score",
+                            "civilian_shirt": "CLIP garment classification confidence"
+                        }.get(classification_type, "Mixed pipeline confidence")
                     }
                 }
 
-                if status == "ALLOWED":
-                    results["allowed"].append(res_obj)
-                else:
-                    results["not_allowed"].append(res_obj)
+
+                add_detection(results, res_obj, status)
             except Exception as e:
                 print(f"Error processing person {person.get('person_index')}: {e}")
-                results["not_allowed"].append({
+                res_obj = {
                     "person_index": person.get("person_index", 0),
+                    "status": "NOT ALLOWED",
                     "stage": "Exception",
-                    "reason": "Civilian Shirt",
-                    "confidence": 0.5
-                })
+                    "reason": "Detection processing failed for this person",
+                    "confidence": 0.0,
+                    "type": "processing_error",
+                    "boundingBox": xyxy_to_box(*person.get("torso_box", [0, 0, 0, 0])),
+                    "evidenceBoxes": [],
+                    "details": {
+                        "classification_source": "Backend exception fallback",
+                        "confidence_source": "No valid confidence available"
+                    }
+                }
+                add_detection(results, res_obj, "NOT ALLOWED")
 
         return jsonify(results)
 

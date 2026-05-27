@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, type ChangeEvent, type DragEvent } from 'react';
-import { Upload, X, Image as ImageIcon, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
-import type { DetectionResult, PersonDetection } from './CameraFeed';
+import { Upload, X, CheckCircle, XCircle, RotateCcw } from 'lucide-react';
+import { mapBackendDetections, requestDetection, summarizeDetectionConfidence, type DetectionResult, type PersonDetection } from './CameraFeed';
 
 interface ImageUploadProps {
   onUpload?: (result: DetectionResult) => void;
@@ -13,9 +13,11 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [detectionResult, setDetectionResult] = useState<DetectionResult | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const hasViolation = (detectionResult?.detections || []).some((d) => d.status === 'NOT ALLOWED');
+  const allAllowed = (detectionResult?.detections || []).length > 0 && !hasViolation;
 
-  const handleFileSelect = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  const processFile = async (file: File) => {
     if (!file) return;
 
     const reader = new FileReader();
@@ -24,90 +26,50 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
       setPreviewImage(imageData);
       setIsProcessing(true);
       setDetectionResult(null);
+      setUploadError(null);
 
       try {
-        // Call backend API for detection
-        const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-        const response = await fetch(`${apiUrl}/api/detect`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ image: imageData }),
-        });
-
-        if (!response.ok) {
-          throw new Error(`API error: ${response.statusText}`);
-        }
-
-        const data = await response.json();
+        const data = await requestDetection(imageData);
 
         // Process API response: allowed and not_allowed arrays
-        const allDetections: PersonDetection[] = [
-          ...(data.allowed || []).map((d: any) => ({ ...d, status: 'ALLOWED' })),
-          ...(data.not_allowed || []).map((d: any) => ({ ...d, status: 'NOT ALLOWED' }))
-        ];
+        const allDetections = mapBackendDetections(data);
 
         if (allDetections.length === 0) {
-          throw new Error('No people detected in image');
+          throw new Error('No people were detected in this image.');
         }
 
-        const firstDet = allDetections[0];
         const detectedObjects = allDetections.map(d => d.reason);
-        const avgConfidence = allDetections.reduce((acc, d) => acc + d.confidence, 0) / allDetections.length;
+        const resultConfidence = summarizeDetectionConfidence(allDetections);
 
         const result: DetectionResult = {
           id: Math.random().toString(36).substr(2, 9),
           timestamp: new Date(),
-          confidence: avgConfidence,
+          confidence: resultConfidence,
           detectedObjects,
           imageData,
           detections: allDetections,
-          boundingBox: {
-            x: 0.3,
-            y: 0.2,
-            width: 0.4,
-            height: 0.5
-          }
         };
 
         setDetectionResult(result);
         onUpload?.(result);
       } catch (error) {
         console.error('Detection error:', error);
-        // Display backend error or fallback simply as "NOT ALLOWED"
-        const mockReason = "NOT ALLOWED";
-        const confidence = 0.0;
-
-        const mockResult: DetectionResult = {
-          id: Math.random().toString(36).substr(2, 9),
-          timestamp: new Date(),
-          confidence,
-          detectedObjects: [mockReason],
-          imageData,
-          detections: [{
-            person_index: 0,
-            stage: "System Error",
-            reason: mockReason,
-            confidence,
-            status: 'NOT ALLOWED'
-          }],
-          boundingBox: {
-            x: 0.3,
-            y: 0.2,
-            width: 0.4,
-            height: 0.5
-          }
-        };
-
-        setDetectionResult(mockResult);
-        onUpload?.(mockResult);
+        setDetectionResult(null);
+        setUploadError(error instanceof Error ? error.message : 'Image analysis failed.');
       } finally {
         setIsProcessing(false);
       }
     };
 
     reader.readAsDataURL(file);
+  };
+
+  const handleFileSelect = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    await processFile(file);
+    event.target.value = '';
   };
 
   // Draw bounding box on preview
@@ -124,36 +86,47 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
         if (ctx) {
           ctx.drawImage(img, 0, 0);
 
-          const box = detectionResult.boundingBox;
-          if (box) {
-            const x = box.x * img.width;
-            const y = box.y * img.height;
-            const width = box.width * img.width;
-            const height = box.height * img.height;
+          (detectionResult.detections || []).forEach((det) => {
+            const boxes = [
+              ...(det.boundingBox
+                ? [{
+                    box: det.boundingBox,
+                    type: 'person',
+                    label: `${det.status}: ${det.reason}`,
+                    confidence: det.confidence,
+                  }]
+                : []),
+              ...((det.evidenceBoxes || [])
+                .filter((evidence) => evidence.type !== 'garment')
+                .map((evidence) => ({
+                  box: evidence.box,
+                  type: evidence.type,
+                  label: evidence.label,
+                  confidence: evidence.confidence,
+                }))),
+            ];
 
-            // Determine color
-            let color = '#10b981';
-            const label = detectionResult.detectedObjects?.[0] || "";
-            const lowLabel = label.toLowerCase();
-            if (lowLabel.includes('civilian') || lowLabel.includes('violation') || lowLabel.includes('not white') || lowLabel.includes('error') || lowLabel.includes('not allowed')) {
-              color = '#ef4444';
-            }
+            boxes.forEach(({ box, type, label, confidence }) => {
+              let color = det.status === 'NOT ALLOWED' ? '#ef4444' : '#10b981';
+              if (type === 'logo') color = '#f59e0b';
+              if (type === 'org_text') color = '#6366f1';
 
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 4;
-            ctx.strokeRect(x, y, width, height);
+              ctx.strokeStyle = color;
+              ctx.lineWidth = type === 'person' ? 4 : 3;
+              ctx.strokeRect(box.x, box.y, box.width, box.height);
 
-            const labelText = `${label} (${(detectionResult.confidence * 100).toFixed(1)}%)`;
-            ctx.font = 'bold 20px Arial';
-            const textWidth = ctx.measureText(labelText).width;
-            const padding = 12;
+              const labelText = `P${det.person_index + 1} ${label} (${(confidence * 100).toFixed(1)}%)`;
+              ctx.font = 'bold 18px Arial';
+              const textWidth = ctx.measureText(labelText).width;
+              const padding = 10;
+              const labelY = Math.max(0, box.y - 32);
 
-            ctx.fillStyle = color;
-            ctx.fillRect(x, y - 40, textWidth + padding * 2, 40);
-
-            ctx.fillStyle = '#ffffff';
-            ctx.fillText(labelText, x + padding, y - 12);
-          }
+              ctx.fillStyle = color;
+              ctx.fillRect(box.x, labelY, textWidth + padding * 2, 32);
+              ctx.fillStyle = '#ffffff';
+              ctx.fillText(labelText, box.x + padding, labelY + 21);
+            });
+          });
         }
       };
 
@@ -166,10 +139,7 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
     setIsDragging(false);
     const file = event.dataTransfer.files[0];
     if (file && file.type.startsWith('image/')) {
-      const fakeEvent = {
-        target: { files: [file] }
-      } as ChangeEvent<HTMLInputElement>;
-      handleFileSelect(fakeEvent);
+      void processFile(file);
     }
   };
 
@@ -186,6 +156,14 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
     setPreviewImage(null);
     setDetectionResult(null);
     setIsProcessing(false);
+    setUploadError(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleReupload = () => {
+    fileInputRef.current?.click();
   };
 
   return (
@@ -246,42 +224,83 @@ export default function ImageUpload({ onUpload }: ImageUploadProps) {
             )}
           </div>
 
+          {uploadError && !isProcessing && (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              {uploadError}
+            </div>
+          )}
+
           {detectionResult && !isProcessing && (
-            <div className={`rounded-xl p-4 sm:p-5 border-l-4 shadow-lg ${
-              detectionResult.detections?.some(d => d.status === 'ALLOWED')
-                ? 'bg-green-50 border-green-500'
-                : 'bg-red-50 border-red-500'
-            }`}>
-              <div className="flex items-start gap-3 sm:gap-4">
-                <div className={`p-2 sm:p-3 rounded-full flex-shrink-0 ${
-                  detectionResult.detections?.some(d => d.status === 'ALLOWED')
-                    ? 'bg-green-100'
-                    : 'bg-red-100'
-                }`}>
-                  {detectionResult.detections?.some(d => d.status === 'ALLOWED') ? (
-                    <CheckCircle className="w-6 h-6 sm:w-8 sm:h-8 text-green-600" />
-                  ) : (
-                    <XCircle className="w-6 h-6 sm:w-8 sm:h-8 text-red-600" />
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <h3 className="text-base sm:text-lg font-bold text-gray-800 mb-1">
-                    {detectionResult.detectedObjects?.[0] || "No Objects Detected"}
-                  </h3>
-                  <p className="text-xs sm:text-sm text-gray-600 mb-2 sm:mb-3">
-                    Confidence: <span className="font-semibold">{(detectionResult.confidence * 100).toFixed(1)}%</span>
-                  </p>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div
-                      className={`h-2 rounded-full ${
-                        detectionResult.confidence > 0.8 ? 'bg-green-500' :
-                        detectionResult.confidence > 0.6 ? 'bg-yellow-500' :
-                        'bg-red-500'
-                      }`}
-                      style={{ width: `${detectionResult.confidence * 100}%` }}
-                    />
+            <div className="space-y-3">
+              <div className={`rounded-xl p-4 sm:p-5 border-l-4 shadow-lg ${
+                allAllowed
+                  ? 'bg-green-50 border-green-500'
+                  : 'bg-red-50 border-red-500'
+              }`}>
+                <div className="flex items-start gap-3 sm:gap-4">
+                  <div className={`p-2 sm:p-3 rounded-full flex-shrink-0 ${
+                    allAllowed
+                      ? 'bg-green-100'
+                      : 'bg-red-100'
+                  }`}>
+                    {allAllowed ? (
+                      <CheckCircle className="w-6 h-6 sm:w-8 sm:h-8 text-green-600" />
+                    ) : (
+                      <XCircle className="w-6 h-6 sm:w-8 sm:h-8 text-red-600" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-base sm:text-lg font-bold text-gray-800 mb-1">
+                      {allAllowed ? 'All detected people are allowed' : 'One or more detected people are not allowed'}
+                    </h3>
+                    <p className="text-xs sm:text-sm text-gray-600 mb-2 sm:mb-3">
+                      Confidence: <span className="font-semibold">{(detectionResult.confidence * 100).toFixed(1)}%</span>
+                    </p>
+                    <div className="mb-3 flex flex-col gap-2">
+                      {detectionResult.detections?.map((det, idx) => (
+                        <div
+                          key={idx}
+                          className={`rounded-lg px-3 py-2 text-xs sm:text-sm font-medium ${
+                            det.status === 'ALLOWED'
+                              ? 'bg-green-100 text-green-800'
+                              : 'bg-red-100 text-red-800'
+                          }`}
+                        >
+                          Person {det.person_index + 1}: {det.status} - {det.reason}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div
+                        className={`h-2 rounded-full ${
+                          detectionResult.confidence > 0.8 ? 'bg-green-500' :
+                          detectionResult.confidence > 0.6 ? 'bg-yellow-500' :
+                          'bg-red-500'
+                        }`}
+                        style={{ width: `${detectionResult.confidence * 100}%` }}
+                      />
+                    </div>
                   </div>
                 </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3">
+                <button
+                  type="button"
+                  onClick={clearUpload}
+                  className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-slate-800"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  Scan Another Image
+                </button>
+                <button
+                  type="button"
+                  onClick={handleReupload}
+                  className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg border border-[#505081] bg-white px-4 py-3 text-sm font-semibold text-[#272757] transition-colors hover:bg-[#8686AC]/10"
+                >
+                  <Upload className="h-4 w-4" />
+                  Re-upload
+                </button>
               </div>
             </div>
           )}
