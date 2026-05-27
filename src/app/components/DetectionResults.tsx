@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { Activity, TrendingUp, Clock, CheckCircle, XCircle, AlertCircle, PieChart, Trash2 } from 'lucide-react';
 import { BarChart, Bar, PieChart as RechartsPie, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import type { DetectionResult } from './CameraFeed';
@@ -340,6 +340,80 @@ interface DetectionDetailsModalProps {
 }
 
 export function DetectionDetailsModal({ result, onClose }: DetectionDetailsModalProps) {
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (!result) return;
+    const img = imgRef.current;
+    const canvas = canvasRef.current;
+    if (!img || !canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const drawBoxes = () => {
+      const naturalW = img.naturalWidth || img.width;
+      const naturalH = img.naturalHeight || img.height;
+      const displayW = img.clientWidth;
+      const displayH = img.clientHeight;
+      canvas.width = displayW;
+      canvas.height = displayH;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      (result.detections || []).forEach((det) => {
+        const boxes = [
+          ...(det.boundingBox
+            ? [{ box: det.boundingBox, type: 'person', label: `${det.status}: ${det.reason}`, confidence: det.confidence }]
+            : []),
+          ...((det.evidenceBoxes || [])
+            .filter((e) => e.type !== 'garment')
+            .map((e) => ({ box: e.box, type: e.type, label: e.label, confidence: e.confidence }))),
+        ];
+
+        boxes.forEach(({ box, type, label, confidence }) => {
+          const scaleX = displayW / (naturalW || 1);
+          const scaleY = displayH / (naturalH || 1);
+          const x = box.x * scaleX;
+          const y = box.y * scaleY;
+          const width = box.width * scaleX;
+          const height = box.height * scaleY;
+
+          let color = det.status === 'NOT ALLOWED' ? '#ef4444' : '#10b981';
+          if (type === 'logo') color = '#f59e0b';
+          if (type === 'org_text') color = '#6366f1';
+
+          ctx.strokeStyle = color;
+          ctx.lineWidth = type === 'person' ? 3 : 2;
+          ctx.strokeRect(x, y, width, height);
+
+          const labelText = `P${det.person_index + 1} ${label} (${(confidence * 100).toFixed(1)}%)`;
+          ctx.font = 'bold 12px Arial';
+          const textWidth = ctx.measureText(labelText).width;
+          const labelHeight = 20;
+          const labelY = Math.max(0, y - labelHeight);
+
+          ctx.fillStyle = color;
+          ctx.fillRect(x, labelY, textWidth + 8, labelHeight);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(labelText, x + 4, labelY + 14);
+        });
+      });
+    };
+
+    const onLoadOrResize = () => drawBoxes();
+    if (img.complete) {
+      drawBoxes();
+    } else {
+      img.onload = drawBoxes;
+    }
+
+    window.addEventListener('resize', onLoadOrResize);
+    return () => {
+      window.removeEventListener('resize', onLoadOrResize);
+      if (img) img.onload = null;
+    };
+  }, [result]);
+
   if (!result) {
     return null;
   }
@@ -370,11 +444,15 @@ export function DetectionDetailsModal({ result, onClose }: DetectionDetailsModal
 
         <div className="p-4 sm:p-6">
           {result.imageData && (
-            <img
-              src={result.imageData}
-              alt="Detection"
-              className="w-full rounded-lg mb-4 sm:mb-6 border-2 border-gray-200"
-            />
+            <div className="relative w-full rounded-lg mb-4 sm:mb-6 border-2 border-gray-200">
+              <img
+                ref={imgRef}
+                src={result.imageData}
+                alt="Detection"
+                className="w-full h-auto rounded-lg block"
+              />
+              <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full pointer-events-none" />
+            </div>
           )}
 
           <div className="space-y-4 sm:space-y-5">
