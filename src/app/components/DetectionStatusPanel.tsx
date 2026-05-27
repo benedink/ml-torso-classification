@@ -121,7 +121,6 @@ export function DetectionStatusPanel({ detection }: DetectionStatusPanelProps) {
                         <span className="font-medium">Reason:</span> <span>{det.reason}</span>
                         <span className="text-gray-700">|</span>
                         <span className="font-medium">Confidence:</span> <span>{(det.confidence * 100).toFixed(1)}%</span>
-                        {det.boundingBox && <><span className="text-gray-700">|</span><span className="font-medium">Box:</span> <span>{`[${det.boundingBox.x},${det.boundingBox.y},${det.boundingBox.width},${det.boundingBox.height}]`}</span></>}
                       </div>
                       {det.details?.confidence_source && (
                         <div className="mt-1 text-[11px] text-gray-500">

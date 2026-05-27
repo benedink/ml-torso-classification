@@ -3,6 +3,7 @@ import { CameraFeed, DetectionResult } from './components/CameraFeed';
 import ImageUpload from './components/ImageUpload';
 import { DetectionResults } from './components/DetectionResults';
 import { DetectionDetailsModal } from './components/DetectionResults';
+import { BrandLogo } from './components/BrandLogo';
 import { DetectionStatusPanel } from './components/DetectionStatusPanel';
 import { Monitor, BarChart3, Shield, X, Trash2 } from 'lucide-react';
 
@@ -59,9 +60,7 @@ export default function App() {
       <header className="bg-gradient-to-r from-[#0F0E47] to-[#272757] shadow-lg">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
           <div className="flex items-center gap-3 sm:gap-4">
-            <div className="bg-white rounded-full p-2 sm:p-3 shadow-md flex-shrink-0">
-              <Shield className="w-6 h-6 sm:w-8 sm:h-8 text-[#272757]" />
-            </div>
+            <BrandLogo variant="compact" className="w-16 sm:w-20 flex-shrink-0" />
             <div className="min-w-0">
               <h1 className="text-lg sm:text-2xl lg:text-3xl font-bold text-white leading-tight">
                 School Uniform Compliance Detection System
@@ -250,13 +249,7 @@ export default function App() {
       <footer className="bg-gradient-to-r from-[#0F0E47] to-[#272757] text-white mt-8 sm:mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
           <div className="flex justify-center">
-            <div className="flex items-center gap-2 sm:gap-3 text-center">
-              <Shield className="w-5 h-5 sm:w-6 sm:h-6 text-[#8686AC] flex-shrink-0" />
-              <div>
-                <p className="font-semibold text-sm sm:text-base">School Uniform Compliance System</p>
-                <p className="text-xs sm:text-sm text-[#8686AC]">Powered by AI Deep Learning Technology</p>
-              </div>
-            </div>
+            <BrandLogo variant="full" className="w-full max-w-[360px]" />
           </div>
         </div>
       </footer>
