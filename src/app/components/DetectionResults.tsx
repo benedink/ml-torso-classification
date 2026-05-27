@@ -326,96 +326,106 @@ export function DetectionResults({ results, onRemoveResult, onClearHistory }: De
         </div>
       )}
 
-      {/* Detail Modal */}
-      {selectedResult && (
-        <div
-          onClick={() => setSelectedResult(null)}
-          className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-3 sm:p-4 z-50"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl"
-          >
-            <div className="bg-gradient-to-r from-[#272757] to-[#505081] px-4 sm:px-6 py-4 sm:py-5 text-white">
-              <div className="flex justify-between items-start gap-3">
-                <div className="min-w-0 flex-1">
-                  <h3 className="text-lg sm:text-2xl font-bold">Detection Details</h3>
-                  <p className="text-xs sm:text-sm text-[#8686AC] mt-1 truncate">{selectedResult.timestamp.toLocaleString()}</p>
+      <DetectionDetailsModal
+        result={selectedResult}
+        onClose={() => setSelectedResult(null)}
+      />
+    </div>
+  );
+}
+
+interface DetectionDetailsModalProps {
+  result: DetectionResult | null;
+  onClose: () => void;
+}
+
+export function DetectionDetailsModal({ result, onClose }: DetectionDetailsModalProps) {
+  if (!result) {
+    return null;
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-3 sm:p-4 z-50"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl"
+      >
+        <div className="bg-gradient-to-r from-[#272757] to-[#505081] px-4 sm:px-6 py-4 sm:py-5 text-white">
+          <div className="flex justify-between items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <h3 className="text-lg sm:text-2xl font-bold">Detection Details</h3>
+              <p className="text-xs sm:text-sm text-[#8686AC] mt-1 truncate">{result.timestamp.toLocaleString()}</p>
+            </div>
+            <button
+              onClick={onClose}
+              className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2 transition-colors flex-shrink-0"
+            >
+              <X className="w-5 h-5 sm:w-6 sm:h-6" />
+            </button>
+          </div>
+        </div>
+
+        <div className="p-4 sm:p-6">
+          {result.imageData && (
+            <img
+              src={result.imageData}
+              alt="Detection"
+              className="w-full rounded-lg mb-4 sm:mb-6 border-2 border-gray-200"
+            />
+          )}
+
+          <div className="space-y-4 sm:space-y-5">
+            <div className="bg-gray-50 rounded-lg p-3 sm:p-4">
+              <div className="text-xs sm:text-sm font-semibold text-gray-600 mb-2">Confidence Score</div>
+              <div className="flex items-center gap-2 sm:gap-3">
+                <div className="flex-1 bg-gray-200 rounded-full h-2.5 sm:h-3">
+                  <div
+                    className={`h-2.5 sm:h-3 rounded-full ${
+                      result.confidence > 0.8 ? 'bg-green-500' :
+                      result.confidence > 0.6 ? 'bg-yellow-500' :
+                      'bg-red-500'
+                    }`}
+                    style={{ width: `${result.confidence * 100}%` }}
+                  />
                 </div>
-                <button
-                  onClick={() => setSelectedResult(null)}
-                  className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2 transition-colors flex-shrink-0"
-                >
-                  <X className="w-5 h-5 sm:w-6 sm:h-6" />
-                </button>
+                <span className="text-lg sm:text-xl font-bold text-gray-800 flex-shrink-0">
+                  {(result.confidence * 100).toFixed(1)}%
+                </span>
               </div>
             </div>
 
-            <div className="p-4 sm:p-6">
-              {selectedResult.imageData && (
-                <img
-                  src={selectedResult.imageData}
-                  alt="Detection"
-                  className="w-full rounded-lg mb-4 sm:mb-6 border-2 border-gray-200"
-                />
-              )}
-
-              <div className="space-y-4 sm:space-y-5">
-                <div className="bg-gray-50 rounded-lg p-3 sm:p-4">
-                  <div className="text-xs sm:text-sm font-semibold text-gray-600 mb-2">Confidence Score</div>
-                  <div className="flex items-center gap-2 sm:gap-3">
-                    <div className="flex-1 bg-gray-200 rounded-full h-2.5 sm:h-3">
-                      <div
-                        className={`h-2.5 sm:h-3 rounded-full ${
-                          selectedResult.confidence > 0.8 ? 'bg-green-500' :
-                          selectedResult.confidence > 0.6 ? 'bg-yellow-500' :
-                          'bg-red-500'
-                        }`}
-                        style={{ width: `${selectedResult.confidence * 100}%` }}
-                      />
+            <div>
+              <div className="text-xs sm:text-sm font-semibold text-gray-600 mb-2 sm:mb-3">Classification Result</div>
+              <div className="space-y-3">
+                {result.detections?.map((det, idx) => (
+                  <div key={idx} className="rounded-lg border border-gray-200 p-3">
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
+                      <span className="text-xs font-bold text-gray-500 uppercase">Person #{det.person_index + 1}</span>
+                      <span className={`px-2 py-1 rounded-full text-[10px] font-bold ${
+                        det.status === 'ALLOWED' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                      }`}>
+                        {det.status}
+                      </span>
                     </div>
-                    <span className="text-lg sm:text-xl font-bold text-gray-800 flex-shrink-0">
-                      {(selectedResult.confidence * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs sm:text-sm font-semibold text-gray-600 mb-2 sm:mb-3">Classification Result</div>
-                  <div className="space-y-3">
-                    {selectedResult.detections?.map((det, idx) => (
-                      <div key={idx} className="rounded-lg border border-gray-200 p-3">
-                        <div className="flex flex-wrap items-center gap-2 mb-2">
-                          <span className="text-xs font-bold text-gray-500 uppercase">Person #{det.person_index + 1}</span>
-                          <span className={`px-2 py-1 rounded-full text-[10px] font-bold ${
-                            det.status === 'ALLOWED' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
-                          }`}>
-                            {det.status}
-                          </span>
-                        </div>
-                        <div className="text-sm text-gray-700">{det.reason}</div>
-                        <div className="text-xs text-gray-500 mt-1">
-                          {(det.confidence * 100).toFixed(1)}% confidence
-                        </div>
-                        {det.boundingBox && (
-                          <div className="text-xs text-gray-500 mt-1">
-                            Box: [{det.boundingBox.x},{det.boundingBox.y},{det.boundingBox.width},{det.boundingBox.height}]
-                          </div>
-                        )}
-                        {det.details?.confidence_source && (
-                          <div className="text-xs text-gray-500 mt-1">
-                            Confidence source: {det.details.confidence_source}
-                          </div>
-                        )}
+                    <div className="text-sm text-gray-700">{det.reason}</div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      {(det.confidence * 100).toFixed(1)}% confidence
+                    </div>
+                    {det.details?.confidence_source && (
+                      <div className="text-xs text-gray-500 mt-1">
+                        Confidence source: {det.details.confidence_source}
                       </div>
-                    ))}
+                    )}
                   </div>
-                </div>
+                ))}
               </div>
             </div>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }

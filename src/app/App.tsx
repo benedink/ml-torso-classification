@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { CameraFeed, DetectionResult } from './components/CameraFeed';
 import ImageUpload from './components/ImageUpload';
 import { DetectionResults } from './components/DetectionResults';
+import { DetectionDetailsModal } from './components/DetectionResults';
 import { DetectionStatusPanel } from './components/DetectionStatusPanel';
 import { Monitor, BarChart3, Shield, X, Trash2 } from 'lucide-react';
 
@@ -11,6 +12,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'monitor' | 'results'>('monitor');
   const [detectionHistory, setDetectionHistory] = useState<DetectionResult[]>([]);
   const [currentDetection, setCurrentDetection] = useState<DetectionResult | null>(null);
+  const [selectedHistoryDetection, setSelectedHistoryDetection] = useState<DetectionResult | null>(null);
 
   useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -48,6 +50,7 @@ export default function App() {
     if (window.confirm('Clear all detection history? This cannot be undone.')) {
       setDetectionHistory([]);
       setCurrentDetection(null);
+      setSelectedHistoryDetection(null);
     }
   };
 
@@ -171,6 +174,11 @@ export default function App() {
                               isViolation ? 'bg-red-50 border-red-500' : 'bg-green-50 border-green-500'
                             }`}
                           >
+                            <button
+                              type="button"
+                              onClick={() => setSelectedHistoryDetection(result)}
+                              className="w-full text-left"
+                            >
                             <div className="flex justify-between items-start mb-2">
                               <span className="text-[10px] text-gray-600 font-medium">
                                 {result.timestamp.toLocaleTimeString()}
@@ -206,6 +214,7 @@ export default function App() {
                                 </span>
                               ))}
                             </div>
+                            </button>
                           </div>
                         );
                       })
@@ -232,6 +241,11 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      <DetectionDetailsModal
+        result={selectedHistoryDetection}
+        onClose={() => setSelectedHistoryDetection(null)}
+      />
 
       <footer className="bg-gradient-to-r from-[#0F0E47] to-[#272757] text-white mt-8 sm:mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
